@@ -47,7 +47,7 @@ def get_conversations(page=1):
         print(f"Fetching conversations from: {url}")
         r = requests.get(url, headers=get_crisp_headers())
         print(f"Response status: {r.status_code}")
-        if r.status_code == 200:
+      if r.status_code in [200, 206]:
             data = r.json().get("data", [])
             print(f"Found {len(data)} conversations")
             return data
@@ -63,7 +63,7 @@ def get_messages(session_id):
     try:
         url = f"{CRISP_API_BASE}/website/{CRISP_WEBSITE_ID}/conversation/{session_id}/messages"
         r = requests.get(url, headers=get_crisp_headers())
-        if r.status_code == 200:
+        if r.status_code in [200, 206]:
             return r.json().get("data", [])
         return []
     except Exception as e:
