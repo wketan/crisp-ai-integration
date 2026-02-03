@@ -1,18 +1,19 @@
 """
 Crisp AI Integration - Powered by Claude
+Includes webhook server for /summarize command + hourly Slack summaries
 """
 import os
 import json
 import time
+import base64
+import threading
 import requests
 import schedule
 from datetime import datetime
-from dotenv import load_dotenv
+from flask import Flask, request, jsonify
 import anthropic
-import base64
 
-load_dotenv()
-
+# Environment variables
 CRISP_IDENTIFIER = os.getenv('CRISP_IDENTIFIER')
 CRISP_KEY = os.getenv('CRISP_KEY')
 CRISP_WEBSITE_ID = os.getenv('CRISP_WEBSITE_ID')
@@ -21,60 +22,244 @@ SLACK_WEBHOOK_URL = os.getenv('SLACK_WEBHOOK_URL')
 
 CRISP_API_BASE = "https://api.crisp.chat/v1"
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+app = Flask(__name__)
 
 def get_crisp_headers():
     auth = f"{CRISP_IDENTIFIER}:{CRISP_KEY}"
-    return {"Authorization": f"Basic {base64.b64encode(auth.encode()).decode()}", "X-Crisp-Tier": "plugin", "Content-Type": "application/json"}
+    encoded = base64.b64encode(auth.encode()).decode()
+    return {
+        "Authorization": f"Basic {encoded}",
+        "X-Crisp-Tier": "plugin",
+        "Content-Type": "application/json"
+    }
 
 def get_conversations():
-    r = requests.get(f"{CRISP_API_BASE}/website/{CRISP_WEBSITE_ID}/conversations/list", headers=get_crisp_headers())
-    return r.json().get("data", []) if r.status_code == 200 else []
+    """Get list of conversations from Crisp"""
+    try:
+        url = f"{CRISP_API_BASE}/website/{CRISP_WEBSITE_ID}/conversations/1"
+        print(f"Fetching conversations from: {url}")
+        r = requests.get(url, headers=get_crisp_headers())
+        print(f"Response status: {r.status_code}")
+        if r.status_code == 200:
+            data = r.json().get("data", [])
+            print(f"Found {len(data)} conversations")
+            return data
+        else:
+            print(f"Error response: {r.text}")
+            return []
+    except Exception as e:
+        print(f"Error fetching conversations: {e}")
+        return []
 
 def get_messages(session_id):
-    r = requests.get(f"{CRISP_API_BASE}/website/{CRISP_WEBSITE_ID}/conversation/{session_id}/messages", headers=get_crisp_headers())
-    return r.json().get("data", []) if r.status_code == 200 else []
+    """Get messages from a specific conversation"""
+    try:
+        url = f"{CRISP_API_BASE}/website/{CRISP_WEBSITE_ID}/conversation/{session_id}/messages"
+        r = requests.get(url, headers=get_crisp_headers())
+        if r.status_code == 200:
+            return r.json().get("data", [])
+        return []
+    except Exception as e:
+        print(f"Error fetching messages: {e}")
+        return []
 
 def add_note(session_id, content):
-    r = requests.post(f"{CRISP_API_BASE}/website/{CRISP_WEBSITE_ID}/conversation/{session_id}/message", headers=get_crisp_headers(), json={"type": "note", "from": "operator", "origin": "chat", "content": content})
-    return r.status_code in [200, 201]
+    """Add an internal note to a conversation"""
+    try:
+        url = f"{CRISP_API_BASE}/website/{CRISP_WEBSITE_ID}/conversation/{session_id}/message"
+        payload = {
+            "type": "note",
+            "from": "operator",
+            "origin": "chat",
+            "content": content
+        }
+        r = requests.post(url, headers=get_crisp_headers(), json=payload)
+        print(f"Add note response: {r.status_code}")
+        return r.status_code in [200, 201]
+    except Exception as e:
+        print(f"Error adding note: {e}")
+        return False
 
 def analyze_chat(messages):
-    text = "\n".join([f"[{'Customer' if m.get('from')=='user' else 'Agent'}]: {m.get('content','')}" for m in messages[-50:] if m.get('content')])
+    """Use Claude to analyze and summarize chat messages"""
+    if not messages:
+        return None
+
+    formatted = []
+    for m in messages[-50:]:
+        if m.get('content'):
+            sender = 'Customer' if m.get('from') == 'user' else 'Agent'
+            formatted.append(f"[{sender}]: {m.get('content', '')}")
+
+    if not formatted:
+        return None
+
+    text = "\n".join(formatted)
+
     try:
-        r = claude.messages.create(model="claude-sonnet-4-20250514", max_tokens=1024, messages=[{"role": "user", "content": f"Summarize this support chat briefly:\n{text}"}])
-        return r.content[0].text
-    except Exception:
+        response = claude.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=1024,
+            messages=[{
+                "role": "user",
+                "content": f"""Analyze this support chat and provide a brief summary including:
+- Main issue/topic
+- Current status
+- Any action items or escalation needs
+
+Chat transcript:
+{text}"""
+            }]
+        )
+        return response.content[0].text
+    except Exception as e:
+        print(f"Error analyzing chat: {e}")
         return None
 
 def send_slack(msg):
-    requests.post(SLACK_WEBHOOK_URL, json={"blocks": [{"type": "header", "text": {"type": "plain_text", "text": f"Crisp Summary - {datetime.now().strftime('%I:%M %p')}", "emoji": True}}, {"type": "divider"}, {"type": "section", "text": {"type": "mrkdwn", "text": msg}}, {"type": "divider"}, {"type": "context", "elements": [{"type": "mrkdwn", "text": f"Generated by Crisp AI | {datetime.now().strftime('%Y-%m-%d %H:%M')}"}]}]})
+    """Send a message to Slack"""
+    if not SLACK_WEBHOOK_URL or not msg:
+        print("No Slack webhook URL or empty message")
+        return
+
+    try:
+        payload = {
+            "blocks": [
+                {
+                    "type": "header",
+                    "text": {
+                        "type": "plain_text",
+                        "text": f"Crisp Summary - {datetime.now().strftime('%I:%M %p')}",
+                        "emoji": True
+                    }
+                },
+                {"type": "divider"},
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": msg
+                    }
+                },
+                {"type": "divider"},
+                {
+                    "type": "context",
+                    "elements": [{
+                        "type": "mrkdwn",
+                        "text": f"Generated by Crisp AI | {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                    }]
+                }
+            ]
+        }
+        r = requests.post(SLACK_WEBHOOK_URL, json=payload)
+        print(f"Slack response: {r.status_code}")
+    except Exception as e:
+        print(f"Error sending to Slack: {e}")
 
 def hourly_summary():
+    """Generate hourly summary of all active chats"""
+    print(f"\n=== Running hourly summary at {datetime.now()} ===")
+
     convs = get_conversations()
+
     if not convs:
-        send_slack("No active chats")
+        send_slack("*No active chats in Crisp at this time.*")
         return
+
     summaries = []
-    for c in convs[:10]:
-        msgs = get_messages(c.get("session_id"))
+    for conv in convs[:10]:
+        session_id = conv.get("session_id")
+        if not session_id:
+            continue
+
+        msgs = get_messages(session_id)
         if msgs:
             summary = analyze_chat(msgs)
             if summary:
-                summaries.append(f"*{c.get('meta', {}).get('nickname', 'Unknown')}*: {summary[:200]}")
-        time.sleep(0.5)
-    if summaries:
-        send_slack("\n\n".join(summaries))
-    else:
-        send_slack("No chat activity to summarize")
+                nickname = conv.get('meta', {}).get('nickname', 'Unknown Customer')
+                summaries.append(f"*{nickname}*:\n{summary[:300]}")
 
-def main():
-    print("Starting Crisp AI Integration")
-    schedule.every().hour.at(":00").do(hourly_summary)
-    print("Running initial summary...")
+        time.sleep(0.5)
+
+    if summaries:
+        full_summary = "\n\n---\n\n".join(summaries)
+        send_slack(full_summary)
+    else:
+        send_slack("*No chat activity to summarize.*")
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Handle incoming webhooks from Crisp"""
+    try:
+        data = request.json
+        print(f"Received webhook: {json.dumps(data, indent=2)}")
+
+        event = data.get('event', '')
+
+        if 'message' in event:
+            message_data = data.get('data', {})
+            content = message_data.get('content', '')
+            session_id = message_data.get('session_id')
+
+            if content and '/summarize' in content.lower() and session_id:
+                print(f"Processing /summarize for session: {session_id}")
+
+                msgs = get_messages(session_id)
+
+                if msgs:
+                    summary = analyze_chat(msgs)
+                    if summary:
+                        note_content = f"**AI Summary:**\n\n{summary}"
+                        add_note(session_id, note_content)
+                        return jsonify({"status": "success", "message": "Summary added as note"})
+
+                return jsonify({"status": "error", "message": "Could not generate summary"})
+
+        return jsonify({"status": "ok"})
+
+    except Exception as e:
+        print(f"Webhook error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint"""
+    return jsonify({
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "crisp_website_id": CRISP_WEBSITE_ID[:8] + "..." if CRISP_WEBSITE_ID else None
+    })
+
+@app.route('/test-summary', methods=['GET'])
+def test_summary():
+    """Manually trigger a summary for testing"""
     hourly_summary()
+    return jsonify({"status": "summary triggered"})
+
+def run_scheduler():
+    """Run the scheduler in a background thread"""
+    schedule.every().hour.at(":00").do(hourly_summary)
+    print("Scheduler started - hourly summaries at :00")
+
     while True:
         schedule.run_pending()
         time.sleep(30)
+
+def main():
+    print("=" * 50)
+    print("Starting Crisp AI Integration")
+    print(f"Website ID: {CRISP_WEBSITE_ID}")
+    print("=" * 50)
+
+    print("\nRunning initial summary...")
+    hourly_summary()
+
+    scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+    scheduler_thread.start()
+
+    port = int(os.getenv('PORT', 8080))
+    print(f"\nStarting webhook server on port {port}")
+    app.run(host='0.0.0.0', port=port)
 
 if __name__ == "__main__":
     main()
