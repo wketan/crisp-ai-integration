@@ -11,7 +11,7 @@ import threading
 import requests
 import schedule
 from datetime import datetime, timezone, timedelta
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, redirect
 import anthropic
 
 # IST Timezone (UTC+5:30)
@@ -319,7 +319,7 @@ def widget_analyze():
     except Exception as e:
         return jsonify({"error": str(e)})
 
-@app.route('/webhook', methods=['POST'])
+@app.route('/webhook', methods=['POST', 'GET'])
 def webhook():
     """Handle incoming webhooks from Crisp"""
     try:
