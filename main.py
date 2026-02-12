@@ -323,7 +323,9 @@ def widget_analyze():
 def webhook():
     """Handle incoming webhooks from Crisp"""
     try:
-        data = request.json
+        if request.method == 'GET':
+                        return '<html><body><h1>Plugin Installed!</h1></body></html>'
+                    data = request.json
         print(f"Received webhook: {json.dumps(data, indent=2)}")
         return jsonify({"status": "ok"})
     except Exception as e:
