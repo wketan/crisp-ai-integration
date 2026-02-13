@@ -47,7 +47,7 @@ def get_conversations(page=1):
         print(f"Fetching conversations from: {url}")
         r = requests.get(url, headers=get_crisp_headers())
         print(f"Response status: {r.status_code}")
-      if r.status_code in [200, 206]:
+        if r.status_code in [200, 206]:
             data = r.json().get("data", [])
             print(f"Found {len(data)} conversations")
             return data
@@ -221,7 +221,7 @@ def hourly_summary():
         return
 
     summaries = []
-    for conv in convs[:15]:  # Latest 15 chats
+    for conv in convs[:15]:
         session_id = conv.get("session_id")
         if not session_id:
             continue
@@ -252,31 +252,31 @@ def widget():
             return '''
             <html>
             <head>
-                <style>
-                    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 15px; background: #f5f5f5; }
-                    .btn { background: #4A90D9; color: white; border: none; padding: 12px 20px; border-radius: 6px; cursor: pointer; width: 100%; font-size: 14px; }
-                    .btn:hover { background: #3A7BC8; }
-                    #result { margin-top: 15px; padding: 15px; background: white; border-radius: 6px; white-space: pre-wrap; font-size: 13px; line-height: 1.5; }
-                    .loading { color: #666; }
-                </style>
+            <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 15px; background: #f5f5f5; }
+            .btn { background: #4A90D9; color: white; border: none; padding: 12px 20px; border-radius: 6px; cursor: pointer; width: 100%; font-size: 14px; }
+            .btn:hover { background: #3A7BC8; }
+            #result { margin-top: 15px; padding: 15px; background: white; border-radius: 6px; white-space: pre-wrap; font-size: 13px; line-height: 1.5; }
+            .loading { color: #666; }
+            </style>
             </head>
             <body>
-                <button class="btn" onclick="summarize()">Summarize This Chat</button>
-                <div id="result"></div>
-                <script>
-                    function summarize() {
-                        document.getElementById('result').innerHTML = '<span class="loading">Analyzing chat...</span>';
-                        const sessionId = window.parent.Crisp?.chat?.session_id || new URLSearchParams(window.location.search).get('session_id');
-                        fetch('/widget/analyze?session_id=' + sessionId)
-                            .then(r => r.json())
-                            .then(data => {
-                                document.getElementById('result').innerHTML = data.summary || data.error || 'No summary available';
-                            })
-                            .catch(e => {
-                                document.getElementById('result').innerHTML = 'Error: ' + e.message;
-                            });
-                    }
-                </script>
+            <button class="btn" onclick="summarize()">Summarize This Chat</button>
+            <div id="result"></div>
+            <script>
+            function summarize() {
+                document.getElementById('result').innerHTML = '<span class="loading">Analyzing chat...</span>';
+                const sessionId = window.parent.Crisp?.chat?.session_id || new URLSearchParams(window.location.search).get('session_id');
+                fetch('/widget/analyze?session_id=' + sessionId)
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('result').innerHTML = data.summary || data.error || 'No summary available';
+                })
+                .catch(e => {
+                    document.getElementById('result').innerHTML = 'Error: ' + e.message;
+                });
+            }
+            </script>
             </body>
             </html>
             '''
@@ -321,13 +321,39 @@ def widget_analyze():
 
 @app.route('/webhook', methods=['POST', 'GET'])
 def webhook():
-    """Handle incoming webhooks from Crisp"""
+    """Handle incoming webhooks from Crisp including plugin installation callback"""
     try:
         if request.method == 'GET':
-                        return '<html><body><h1>Plugin Installed!</h1></body></html>'
-                    data = request.json
+            # Plugin installation callback
+            website_id = request.args.get('website_id', '')
+            print(f"Plugin installation callback received - website_id: {website_id}")
+            return '''
+            <html>
+            <head>
+                <meta http-equiv="refresh" content="2;url=https://app.crisp.chat/">
+                <style>
+                    body { font-family: -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #f5f5f5; }
+                    .container { text-align: center; padding: 40px; background: white; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+                    .success { color: #22c55e; font-size: 48px; }
+                    h1 { color: #333; margin: 20px 0 10px; }
+                    p { color: #666; }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="success">✓</div>
+                    <h1>Chat Audit Installed!</h1>
+                    <p>Redirecting to Crisp...</p>
+                </div>
+            </body>
+            </html>
+            '''
+
+        # POST request - handle webhook events
+        data = request.json
         print(f"Received webhook: {json.dumps(data, indent=2)}")
         return jsonify({"status": "ok"})
+
     except Exception as e:
         print(f"Webhook error: {e}")
         return jsonify({"status": "error"}), 500
@@ -347,6 +373,35 @@ def test_summary():
     """Manually trigger a summary for testing"""
     hourly_summary()
     return jsonify({"status": "summary triggered"})
+
+@app.route('/', methods=['GET'])
+def home():
+    """Home page"""
+    ist_time = get_ist_time()
+    return f'''
+    <html>
+    <head>
+        <style>
+            body {{ font-family: -apple-system, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }}
+            h1 {{ color: #333; }}
+            .status {{ background: #d4edda; padding: 15px; border-radius: 8px; margin: 20px 0; }}
+            .endpoint {{ background: #f8f9fa; padding: 10px 15px; margin: 10px 0; border-radius: 5px; font-family: monospace; }}
+        </style>
+    </head>
+    <body>
+        <h1>Crisp AI Integration</h1>
+        <div class="status">
+            <strong>Status:</strong> Running<br>
+            <strong>Time (IST):</strong> {ist_time.strftime('%Y-%m-%d %H:%M IST')}
+        </div>
+        <h3>Endpoints:</h3>
+        <div class="endpoint">GET /health - Health check</div>
+        <div class="endpoint">GET /test-summary - Trigger test summary</div>
+        <div class="endpoint">GET /widget - Sidebar widget</div>
+        <div class="endpoint">POST /webhook - Crisp webhooks</div>
+    </body>
+    </html>
+    '''
 
 def run_scheduler():
     """Run the scheduler in a background thread"""
